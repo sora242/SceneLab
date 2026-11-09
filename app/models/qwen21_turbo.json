@@ -1,0 +1,49 @@
+{
+  "id": "qwen21_turbo",
+  "label": "Qwen-Image-2.1-Turbo",
+  "backend": "qwen21",
+  "files": {
+    "diffusion": "qwen_image_2.1_turbo_int8_convrot.safetensors",
+    "text_encoder": "qwen3vl_8b_int8_convrot.safetensors",
+    "vae": "qwen_image_2.1_vae_bf16.safetensors"
+  },
+  "sampling": {
+    "steps": 8,
+    "cfg": 1.0,
+    "sampler_name": "euler",
+    "scheduler": "simple"
+  },
+  "capabilities": {
+    "generate": true,
+    "edit": true,
+    "edit_strength": false,
+    "mask_method": "color_outline"
+  },
+  "required_nodes": [
+    "UNETLoader",
+    "CLIPLoader",
+    "VAELoader",
+    "KSampler",
+    "VAEDecode",
+    "SaveImage",
+    "LoadImage",
+    "VAEEncode",
+    "QwenImage21Cache",
+    "TextEncodeQwenImage21",
+    "EmptyLatentImage",
+    "ManualSigmas",
+    "KSamplerSelect",
+    "RandomNoise",
+    "SamplerCustomAdvanced",
+    "CFGGuider",
+    "SaveImageAdvanced"
+  ],
+  "workflows": {
+    "edit": "image_qwen_image_2_1_turbo_image_edit.json"
+  },
+  "edit_sampling": {
+    "cfg": 1.0,
+    "sampler_name": "euler",
+    "sigmas": "1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568, 0"
+  }
+}

@@ -1,0 +1,101 @@
+{
+  "71": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_3_06b_base.safetensors",
+      "type": "stable_diffusion",
+      "device": "default"
+    }
+  },
+  "72": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    }
+  },
+  "73": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "76",
+        0
+      ],
+      "vae": [
+        "72",
+        0
+      ]
+    }
+  },
+  "74": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    }
+  },
+  "75": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "71",
+        0
+      ],
+      "text": "worst quality, low quality, blurry, jpeg artifacts, sepia"
+    }
+  },
+  "76": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 0,
+      "steps": 30,
+      "cfg": 4.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0,
+      "model": [
+        "78",
+        0
+      ],
+      "positive": [
+        "77",
+        0
+      ],
+      "negative": [
+        "75",
+        0
+      ],
+      "latent_image": [
+        "74",
+        0
+      ]
+    }
+  },
+  "77": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": [
+        "71",
+        0
+      ],
+      "text": ""
+    }
+  },
+  "78": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "anima-aesthetic-v1.1.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "46": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "73",
+        0
+      ],
+      "filename_prefix": "FlashNext_AnimaAesthetic"
+    }
+  }
+}

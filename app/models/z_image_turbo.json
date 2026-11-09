@@ -1,0 +1,38 @@
+{
+  "id": "z_image_turbo",
+  "label": "Z-Image Turbo",
+  "backend": "z_image",
+  "files": {
+    "diffusion": "z_image_turbo_bf16.safetensors",
+    "text_encoder": "qwen_3_4b.safetensors",
+    "vae": "ae.safetensors"
+  },
+  "sampling": {
+    "steps": 8,
+    "cfg": 1.0,
+    "sampler_name": "res_multistep",
+    "scheduler": "simple"
+  },
+  "capabilities": {
+    "generate": true,
+    "edit": true,
+    "edit_strength": true,
+    "mask_method": "latent_mask"
+  },
+  "required_nodes": [
+    "UNETLoader",
+    "CLIPLoader",
+    "VAELoader",
+    "KSampler",
+    "VAEDecode",
+    "SaveImage",
+    "LoadImage",
+    "VAEEncode",
+    "CLIPTextEncode",
+    "ConditioningZeroOut",
+    "EmptySD3LatentImage",
+    "ModelSamplingAuraFlow",
+    "ImageToMask",
+    "VAEEncodeForInpaint"
+  ]
+}

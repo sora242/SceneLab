@@ -1,0 +1,2 @@
+# Keep Windows batch files as CRLF in GitHub ZIP downloads too.
+*.bat -text

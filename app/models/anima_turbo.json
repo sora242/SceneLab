@@ -1,0 +1,42 @@
+{
+  "id": "anima_turbo",
+  "label": "Anima Turbo v1.1",
+  "backend": "anima",
+  "files": {
+    "diffusion": "anima-turbo-v1.1.safetensors",
+    "text_encoder": "qwen_3_06b_base.safetensors",
+    "vae": "qwen_image_vae.safetensors"
+  },
+  "sampling": {
+    "steps": 8,
+    "cfg": 1.0,
+    "sampler_name": "euler",
+    "scheduler": "simple"
+  },
+  "capabilities": {
+    "generate": true,
+    "edit": true,
+    "edit_strength": true,
+    "character_reference": false,
+    "mask_method": "latent_mask"
+  },
+  "workflows": {
+    "generate": "image_anima_base_v1.json"
+  },
+  "required_nodes": [
+    "CLIPLoader",
+    "CLIPTextEncode",
+    "EmptyLatentImage",
+    "KSampler",
+    "SaveImage",
+    "UNETLoader",
+    "VAEDecode",
+    "VAELoader",
+    "LoadImage",
+    "VAEEncode",
+    "ImageToMask",
+    "VAEEncodeForInpaint"
+  ],
+  "source": "https://huggingface.co/circlestone-labs/Anima",
+  "filename_prefix": "FlashNext_AnimaTurbo"
+}

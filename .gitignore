@@ -1,0 +1,24 @@
+# Local settings and credentials
+*.local.json
+*.local.tmp
+*.shared-settings.json
+.env
+.env.*
+# User works and history
+characters/
+gallery/
+exploration_data/
+inspiration_data/
+# Development, backups and generated files
+test/
+work/
+backups/
+__pycache__/
+*.py[cod]
+*.log
+*.tmp
+.venv/
+venv/
+
+# User settings and works (never distribute)
+/data/
