@@ -1,0 +1,37 @@
+{
+  "id": "juggernaut_xl_ragnarok",
+  "label": "SDXL (Juggernaut XL Ragnarok)",
+  "backend": "sdxl",
+  "files": {
+    "checkpoint": "juggernautXL_ragnarok.safetensors"
+  },
+  "sampling": {
+    "steps": 30,
+    "cfg": 5.0,
+    "sampler_name": "dpmpp_2m_sde",
+    "scheduler": "karras"
+  },
+  "capabilities": {
+    "generate": true,
+    "edit": true,
+    "edit_strength": true,
+    "character_reference": false,
+    "mask_method": "latent_mask"
+  },
+  "workflows": {
+    "generate": "image_sdxl_checkpoint.json"
+  },
+  "required_nodes": [
+    "CheckpointLoaderSimple",
+    "CLIPTextEncode",
+    "EmptyLatentImage",
+    "KSampler",
+    "VAEDecode",
+    "SaveImage",
+    "LoadImage",
+    "VAEEncode",
+    "ImageToMask",
+    "VAEEncodeForInpaint"
+  ],
+  "source": "https://huggingface.co/Kandoo/Juggernaut-XL-Ragnarok"
+}

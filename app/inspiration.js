@@ -69,7 +69,7 @@ el('inspireExpand').onclick=async()=>{
 };
 picker.onchange=async()=>{if(!available()){picker.value=session?.id||'';return;}const id=picker.value;setBusy(true);try{session=id?(await api('/api/inspire?id='+encodeURIComponent(id))).session:null;el('inspireCount').value=String(session?.settings.count||12);say(session?'保存したテーマを開きました。材料を編集して、また生成できます。':'テーマを入力してください。');}catch(e){picker.value=session?.id||'';say(e.message);}finally{setBusy(false);render();}};
 el('inspireNew').onclick=()=>{if(!available())return;session=null;picker.value='';el('inspireTheme').value='';el('inspireCount').value='12';render();say('ざっくりしたテーマを入力してください。');};
-el('inspireDelete').onclick=async()=>{if(!available()||!session)return;if(!confirm('このテーマと全ての生成画像・材料・プロンプトを削除しますか？元に戻せません。'))return;setBusy(true);try{await api('/api/inspire/delete',{session_id:session.id});session=null;el('inspireTheme').value='';await refreshList();say('テーマを削除しました。');}catch(e){say(e.message);}finally{setBusy(false);render();}};
+el('inspireDelete').onclick=async()=>{if(!available()||!session)return;if(!await appConfirm('このテーマと全ての生成画像・材料・プロンプトを削除しますか？元に戻せません。'))return;setBusy(true);try{await api('/api/inspire/delete',{session_id:session.id});session=null;el('inspireTheme').value='';await refreshList();say('テーマを削除しました。');}catch(e){say(e.message);}finally{setBusy(false);render();}};
 el('inspireStop').onclick=async()=>{
  stopRequested=true;
  el('inspireStop').disabled=true;

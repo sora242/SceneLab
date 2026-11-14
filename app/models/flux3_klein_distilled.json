@@ -1,0 +1,44 @@
+{
+  "id": "flux3_klein_distilled",
+  "label": "FLUX 3 Image Klein (Distilled INT8)",
+  "backend": "flux3",
+  "files": {
+    "diffusion": "flux3-image-klein-int8-convrot.safetensors",
+    "text_encoder": "qwen3vl_4b_int8_convrot.safetensors",
+    "vae": "flux2-vae.safetensors"
+  },
+  "sampling": {
+    "steps": 16,
+    "cfg": 1.0,
+    "sampler_name": "euler",
+    "scheduler": "simple"
+  },
+  "capabilities": {
+    "generate": true,
+    "edit": true,
+    "edit_strength": false,
+    "character_reference": false,
+    "mask_method": "bounding_box"
+  },
+  "required_nodes": [
+    "UNETLoader",
+    "CLIPLoader",
+    "VAELoader",
+    "CLIPTextEncode",
+    "KSampler",
+    "VAEDecode",
+    "SaveImage",
+    "LoadImage",
+    "EmptyFlux2LatentImage",
+    "ReferenceMultiLatent",
+    "ConditioningZeroOut"
+  ],
+  "workflows": {
+    "generate": "image_flux3_klein_distilled_t2i.json",
+    "edit": "image_flux3_klein_distilled_image_edit.json"
+  },
+  "upsamplers": {
+    "generate": "qwen3.5_9b_flux3_prompt_upsampler_w4a8.safetensors",
+    "edit": "qwen3.5_9b_flux3_prompt_upsampler_w4a8.safetensors"
+  }
+}

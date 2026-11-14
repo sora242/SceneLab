@@ -15,16 +15,21 @@ CUSTOM_MODELS = DATA_DIR / 'custom_models.local.json'
 LOCK = threading.RLock()
 FILE_INPUTS = {'diffusion': ('UNETLoader', 'unet_name'), 'text_encoder': ('CLIPLoader', 'clip_name'), 'vae': ('VAELoader', 'vae_name')}
 
+CHECKPOINT_INPUTS = {'checkpoint': ('CheckpointLoaderSimple', 'ckpt_name')}
+
+def file_inputs(model):
+    return CHECKPOINT_INPUTS if model['backend'] == 'sdxl' else FILE_INPUTS
+
 def definitions():
     result = {}
     for path in sorted((ROOT / 'models').glob('*.json')):
         model = json.loads(path.read_text(encoding='utf-8'))
-        if model['id'] in result or model['backend'] not in ('qwen21', 'z_image', 'anima'):
+        if model['id'] in result or model['backend'] not in ('qwen21', 'z_image', 'anima', 'flux3', 'sdxl'):
             raise ValueError('モデル定義が不正です: ' + path.name)
         result[model['id']] = model
     if CUSTOM_MODELS.exists():
         for model in json.loads(CUSTOM_MODELS.read_text(encoding='utf-8')):
-            if model['id'] in result or not model['id'].startswith('custom_') or model['backend'] not in ('qwen21', 'z_image', 'anima', 'user_workflow'):
+            if model['id'] in result or not model['id'].startswith('custom_') or model['backend'] not in ('qwen21', 'z_image', 'anima', 'flux3', 'sdxl', 'user_workflow'):
                 raise ValueError('追加モデル定義が不正です。')
             result[model['id']] = model
     return result
@@ -86,6 +91,8 @@ def get(model_id, parameter_mode=None):
     for key in ('files', 'sampling', 'edit_sampling'):
         if key in model:
             model[key].update(override.get(key, {}))
+    if model['backend'] in ('qwen21', 'flux3'):
+        model['upsamplers'] = {'generate': '', 'edit': '', **model.get('upsamplers', {}), **override.get('upsamplers', {})}
     model['mode_parameters'] = copy.deepcopy(override.get('mode_parameters', {}))
     if parameter_mode is not None:
         if parameter_mode not in ('chat', 'edit', 'explore', 'inspire'):
@@ -123,7 +130,7 @@ def check(model, info):
     for node in model['required_nodes']:
         if node not in info:
             errors.append('必要なノードがありません: ' + node)
-    for key, (node, field) in FILE_INPUTS.items():
+    for key, (node, field) in file_inputs(model).items():
         if model['files'][key] not in choices(info, node, field):
             errors.append(key + ' のファイルが見つかりません: ' + model['files'][key])
     for key in ('sampler_name', 'scheduler'):
@@ -131,13 +138,20 @@ def check(model, info):
             errors.append('未対応の生成設定: ' + key + '=' + model['sampling'][key])
     if 'edit_sampling' in model and model['edit_sampling']['sampler_name'] not in choices(info, 'KSamplerSelect', 'sampler_name'):
         errors.append('編集用Samplerが未対応です: ' + model['edit_sampling']['sampler_name'])
+    for mode, filename in model.get('upsamplers', {}).items():
+        if filename:
+            for node in ('TextGenerate', 'PrimitiveStringMultiline', 'BatchImagesNode'):
+                if node not in info:
+                    errors.append('アップサンプラーに必要なノードがありません: ' + node)
+            if filename not in choices(info, 'CLIPLoader', 'clip_name'):
+                errors.append(('新規生成' if mode == 'generate' else '編集') + '用アップサンプラーが見つかりません: ' + filename)
     return {'ready': not errors, 'errors': errors}
 
 def status(url):
     models = listing()
     try:
         info = inventory(url)
-        return {'connected': True, 'url': url, 'files': {key: choices(info, *spec) for key, spec in FILE_INPUTS.items()},
+        return {'connected': True, 'url': url, 'files': {key: choices(info, *spec) for key, spec in {**FILE_INPUTS, **CHECKPOINT_INPUTS}.items()},
                 'edit_samplers': choices(info, 'KSamplerSelect', 'sampler_name'),
                 'samplers': choices(info, 'KSampler', 'sampler_name'), 'schedulers': choices(info, 'KSampler', 'scheduler'),
                 'models': [{**m, 'check': check(m, info)} for m in models]}
@@ -157,12 +171,18 @@ def parse_edit_sigmas(text):
 
 
 def validate_values(model):
+    if 'upsamplers' in model:
+        values = model['upsamplers']
+        if model['backend'] not in ('qwen21', 'flux3') or not isinstance(values, dict) or set(values) != {'generate', 'edit'}:
+            raise ValueError('アップサンプラーの設定形式が不正です。')
+        if any(not isinstance(v, str) or len(v) > 500 or (v and not v.lower().endswith('.safetensors')) for v in values.values()):
+            raise ValueError('アップサンプラーのモデルファイルが不正です。')
     if model['backend'] == 'user_workflow':
         user_workflows.validate(model['graph'],model['bindings'],model['output_node'])
         if model['sampling'] or model['files']:
             raise ValueError('このワークフローのパラメータはJSON内で変更してください。')
         return
-    if set(model['files']) != set(FILE_INPUTS) or set(model['sampling']) != {'steps', 'cfg', 'sampler_name', 'scheduler'}:
+    if set(model['files']) != set(file_inputs(model)) or set(model['sampling']) != {'steps', 'cfg', 'sampler_name', 'scheduler'}:
         raise ValueError('設定項目が不正です。')
     if 'edit_sampling' in model:
         edit = model['edit_sampling']
@@ -192,6 +212,20 @@ def save(body, url):
         return save_mode(body)
     model_id = body.get('id')
     model = get(model_id)
+    if 'upsamplers' in body:
+        model['upsamplers'] = body['upsamplers']
+        validate_values(model)
+        if any(model['upsamplers'].values()):
+            report = check(model, inventory(url))
+            if not report['ready']:
+                raise ValueError('\n'.join(report['errors']))
+        with LOCK:
+            settings = overrides()
+            settings.setdefault(model_id, {})['upsamplers'] = model['upsamplers']
+            temporary = SETTINGS.with_suffix('.tmp')
+            temporary.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding='utf-8')
+            temporary.replace(SETTINGS)
+        return {'saved': True, 'model': get(model_id)}
     reset_group = body.get('reset_group')
     if reset_group is not None:
         if reset_group not in ('files', 'sampling', 'edit_sampling') or reset_group not in model:
@@ -216,6 +250,8 @@ def save(body, url):
         if body.get('reset') is True:
             settings.pop(model_id, None)
         else:
+            if reset_group == 'files':
+                settings.setdefault(model_id, {}).pop('upsamplers', None)
             settings.setdefault(model_id, {}).update({key: model[key] for key in ('files', 'sampling', 'edit_sampling') if key in model})
         temporary = SETTINGS.with_suffix('.tmp')
         temporary.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding='utf-8')

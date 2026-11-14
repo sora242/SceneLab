@@ -62,7 +62,7 @@ byId('exploreNew').onclick=async()=>{try{await selectSession('');picker.value=''
 byId('exploreResetScores').onclick=async()=>{
  if(busy||!session)return;
  if(send.disabled){say('ほかの処理が完了してから評価をリセットしてください。');return;}
- if(!confirm('このテーマの全ラウンドのハート評価を0に戻しますか？コメントは残ります。'))return;
+ if(!await appConfirm('このテーマの全ラウンドのハート評価を0に戻しますか？コメントは残ります。',{confirmLabel:'リセットする'}))return;
  setBusy(true);stop.hidden=true;
  try{
   await flush();
@@ -74,7 +74,7 @@ byId('exploreResetScores').onclick=async()=>{
 byId('exploreDelete').onclick=async()=>{
  if(busy||!session)return;
  if(send.disabled){say('ほかの処理が完了してから削除してください。');return;}
- if(!confirm('このテーマを削除しますか？\n\n'+session.theme.slice(0,180)+'\n\nこのテーマの全ラウンド・画像・プロンプト・評価を削除します。元に戻せません。'))return;
+ if(!await appConfirm('このテーマを削除しますか？\n\n'+session.theme.slice(0,180)+'\n\nこのテーマの全ラウンド・画像・プロンプト・評価を削除します。元に戻せません。'))return;
  const sid=session.id;clearTimeout(saveTimer);setBusy(true);stop.hidden=true;
  try{
   if(saving)await saving.catch(()=>{});

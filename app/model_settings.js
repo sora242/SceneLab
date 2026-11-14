@@ -1,6 +1,6 @@
 (() => {
  const el=id=>document.getElementById(id),page=el('settingsView');
- const labels={diffusion:'画像モデル',text_encoder:'テキストエンコーダー',vae:'VAE',steps:'Steps',cfg:'CFG',sampler_name:'Sampler',scheduler:'Scheduler',sigmas:'Sigmas（カンマ区切り）'};
+ const labels={checkpoint:'一体型SDXLチェックポイント',diffusion:'画像モデル',text_encoder:'テキストエンコーダー',vae:'VAE',steps:'Steps',cfg:'CFG',sampler_name:'Sampler',scheduler:'Scheduler',sigmas:'Sigmas（カンマ区切り）'};
  let data={models:[],connected:false},view=window.currentAppView||'chat',loading=null;
  const drafts=new Map();
  const state=document.createElement('p');state.setAttribute('role','status');
@@ -246,6 +246,7 @@
  function select(values,current){const input=document.createElement('select');input.className='select';for(const v of new Set([current,...values])){const o=document.createElement('option');o.value=v;o.textContent=v+(values.includes(v)?'':'（未確認）');input.append(o);}input.value=current;return input;}
  window.imageModelUsesOutline=id=>data.models.find(m=>m.id===id)?.backend==='qwen21';
  window.imageModelSupportsStrength=id=>Boolean(data.models.find(m=>m.id===id)?.capabilities.edit_strength);
+ window.imageModelUsesBoxes=id=>data.models.find(m=>m.id===id)?.backend==='flux3';
  function menus(){for(const [id,cap] of [['generationModel','generate'],['editModel','edit']]){const menu=el(id),current=menu.value;menu.replaceChildren();for(const m of data.models.filter(m=>m.capabilities[cap])){const o=document.createElement('option');o.value=m.id;o.textContent=m.label;menu.append(o);}menu.value=data.models.some(m=>m.id===current&&m.capabilities[cap])?current:'qwen21_turbo';}syncModelControls();}
  function payload(model,group,values){const body={id:model.id,files:model.files,sampling:model.sampling};if(model.edit_sampling)body.edit_sampling=model.edit_sampling;body[group]=values;return body;}
  function currentModel(){if(view==='edit')return el('editModel').value;if(view==='explore')return window.exploreParameterModel?.()||el('generationModel').value;if(view==='inspire')return window.inspireParameterModel?.()||el('generationModel').value;return el('generationModel').value;}
@@ -258,13 +259,13 @@
    }catch(e){failures.set(key,e.message);statuses.set(key,'保存できません：'+e.message);note.textContent='保存できません：'+e.message;}
   });pending=task;return task;
  }
- window.flushParameterSaves=async()=>{const active=document.activeElement;if(active?.matches('#modelParameters [data-parameter]'))active.dispatchEvent(new Event('change'));await pending;const failure=failures.get(currentModel()+':'+view)||failures.get(currentModel()+':files');if(failure)throw Error('パラメータを保存できていません：'+failure);};
+ window.flushParameterSaves=async()=>{const active=document.activeElement;if(active?.matches('#modelParameters [data-parameter]'))active.dispatchEvent(new Event('change'));await pending;const failure=failures.get(currentModel()+':'+view)||failures.get(currentModel()+':files')||failures.get(currentModel()+':upsamplers');if(failure)throw Error('パラメータを保存できていません：'+failure);};
  function renderParameters(){const model=data.models.find(m=>m.id===currentModel());syncSizeControls(model);const qwen=model?.backend==='qwen21';el('characterGroup').classList.toggle('hidden',!qwen||!['chat','explore','inspire'].includes(view));panel.replaceChildren();panel.hidden=!['chat','edit','explore','inspire'].includes(view);if(panel.hidden)return;
   if(!model){panel.textContent='パラメータを読み込んでいます…';return;}const customWorkflow=model.backend==='user_workflow';if(customWorkflow){const note=document.createElement('p');note.className='sub';note.textContent='新規生成専用。Steps・CFG・モデルファイルは登録JSONの値を使用します。サイズ・seedも入力先を指定した場合のみ変更します。未指定のseedでは同じ結果になることがあります。';panel.append(note);if(!model.bindings?.seed)return;}
   const mode=view,group=mode==='edit'&&model.edit_sampling?'edit_sampling':'sampling',key=model.id+':'+mode;
   const values=drafts.get(key)||{...model[group],...(model.mode_parameters?.[mode]||{})};drafts.set(key,values);
   const heading=document.createElement('div');heading.className='label';heading.textContent=mode==='edit'?'編集パラメータ':'生成パラメータ';panel.append(heading);
-  const name=document.createElement('div');name.className='sub';name.textContent=model.label+' ／ このモデル・モード専用。変更は自動保存されます。';panel.append(name);if(!customWorkflow&&model.capabilities.character_reference===false){const hint=document.createElement('div');hint.className='sub';hint.textContent='キャラクターの参照画像は使いません。全体img2img・通常のマスク編集に対応しています。';panel.append(hint);}
+  const name=document.createElement('div');name.className='sub';name.textContent=model.label+' ／ このモデル・モード専用。変更は自動保存されます。';panel.append(name);if(!customWorkflow&&model.capabilities.character_reference===false){const hint=document.createElement('div');hint.className='sub';hint.textContent=model.backend==='flux3'?'元画像と指示で編集します。必要に応じて矩形1つで変更位置を指定できます。キャラクターの参照画像は使いません。':'キャラクターの参照画像は使いません。全体img2img・通常のマスク編集に対応しています。';panel.append(hint);}
   const inputs={},note=document.createElement('div');note.className='sub';note.setAttribute('role','status');note.textContent=statuses.get(key)||'';
   const schedule=()=>{enqueue(model,mode,{...values},key,note);};
   const seedMode=document.createElement('select');
@@ -307,23 +308,41 @@
  function renderSettings(){content.replaceChildren();for(const model of data.models){const section=document.createElement('section');section.className='modelSettingsCard';const heading=document.createElement('h3');heading.textContent=model.label;const report=document.createElement('p');report.className='sub';report.style.whiteSpace='pre-wrap';report.textContent=model.check?(model.check.ready?'ファイル・必要ノード確認済み':model.check.errors.join('\n')):'未確認';section.append(heading,report);
    if(model.backend==='user_workflow'){renderWorkflowCard(model,section,report);content.append(section);continue;}
    const inputs={};for(const [k,v] of Object.entries(model.files)){const input=select(data.files?.[k]||[],v);input.disabled=!data.connected;inputs[k]=field(section,labels[k],input);}
+   if(model.upsamplers)renderUpsamplers(model,section);
    let savedFiles={...model.files};
    for(const input of Object.values(inputs))input.addEventListener('change',()=>{
     const files=Object.fromEntries(Object.entries(inputs).map(([k,v])=>[k,v.value]));report.textContent='確認・保存中…';
     pending=pending.then(async()=>{try{const current=data.models.find(m=>m.id===model.id);const r=await api('/api/model-settings',payload(current,'files',files));data.models=data.models.map(m=>m.id===model.id?r.model:m);savedFiles={...r.model.files};failures.delete(model.id+':files');report.textContent='';}catch(e){failures.set(model.id+':files',e.message);report.textContent='保存できません：'+e.message;}});
    });
-   const test=trialButton(model,report,512,'画像モデル設定の動作確認',()=>{
+   const test=trialButton(model,report,model.backend==='sdxl'?1024:512,'画像モデル設定の動作確認',()=>{
     if(Object.entries(inputs).some(([key,input])=>input.value!==savedFiles[key])||failures.has(model.id+':files')){
      throw Error('ファイル設定の保存に失敗しています。選択を変更して再試行してください。');
     }
    });
-   const reset=button('ファイル設定を標準に戻す',async()=>{reset.disabled=true;try{await pending;const r=await api('/api/model-settings',{id:model.id,reset_group:'files'});failures.delete(model.id+':files');data.models=data.models.map(m=>m.id===model.id?r.model:m);renderSettings();}catch(e){report.textContent=e.message;reset.disabled=false;}});section.append(reset,test);if(model.custom)section.append(removeButton('追加モデルを削除',async()=>{if(!confirm(model.label+' の登録を削除しますか？ モデルファイルや生成画像は削除しません。'))return;try{await pending;await api('/api/model-settings',{action:'remove_custom',id:model.id});await load();}catch(e){report.textContent=e.message;}}));content.append(section);
+   const reset=button('ファイル設定を標準に戻す',async()=>{reset.disabled=true;try{await pending;const r=await api('/api/model-settings',{id:model.id,reset_group:'files'});failures.delete(model.id+':files');failures.delete(model.id+':upsamplers');data.models=data.models.map(m=>m.id===model.id?r.model:m);renderSettings();}catch(e){report.textContent=e.message;reset.disabled=false;}});section.append(reset,test);if(model.custom)section.append(removeButton('追加モデルを削除',async()=>{if(!await appConfirm(model.label+' の登録を削除しますか？ モデルファイルや生成画像は削除しません。'))return;try{await pending;await api('/api/model-settings',{action:'remove_custom',id:model.id});await load();}catch(e){report.textContent=e.message;}}));content.append(section);
   }renderModelRegistration();}
+ function renderUpsamplers(model,section){
+  const hint=document.createElement('p');hint.className='sub';hint.textContent='プロンプト拡張モデル。新規生成の設定はチャット・探索・ひらめきに適用します。選択すると自動保存されます。';section.append(hint);
+  const inputs={},note=document.createElement('p');note.className='sub';note.setAttribute('role','status');
+  for(const [mode,label] of [['generate','新規生成用アップサンプラー'],['edit','編集用アップサンプラー']]){
+   const current=model.upsamplers[mode]||'';
+   const candidates=(data.files?.text_encoder||[]).filter(name=>(model.backend==='flux3'?/flux3_prompt_upsampler/i.test(name):new RegExp('qwen_image_2\\.1_pe_'+(mode==='edit'?'i2i':'t2i'),'i').test(name))&&name.endsWith('.safetensors'));
+   const input=select(candidates,current);input.options[0].textContent=current?input.options[0].textContent:'使用しない';
+   if(current){const none=document.createElement('option');none.value='';none.textContent='使用しない';input.prepend(none);input.value=current;}
+   inputs[mode]=field(section,label,input);
+   input.onchange=()=>{
+    const ups=Object.fromEntries(Object.entries(inputs).map(([key,el])=>[key,el.value]));
+    note.textContent='保存中…';
+    pending=pending.then(async()=>{try{const result=await api('/api/model-settings',{id:model.id,upsamplers:ups});data.models=data.models.map(m=>m.id===model.id?result.model:m);failures.delete(model.id+':upsamplers');note.textContent='';}catch(e){failures.set(model.id+':upsamplers',e.message);note.textContent='保存できません：'+e.message;}});
+   };
+  }
+  section.append(note);
+ }
  function renderModelRegistration(){
   const box=document.createElement('section');box.className='modelSettingsCard';
   const heading=document.createElement('h3');heading.textContent='モデルを新規登録';
   const reuse=document.createElement('p');reuse.className='sub';
-  reuse.textContent='対応済みモデルのワークフロー：同じ構造の派生モデルや量子化版を追加するときに選びます。ワークフローと標準パラメータを引き継ぎ、ComfyUIに配置済みのモデル本体・テキストエンコーダー・VAEを指定します。';
+  reuse.textContent='対応済みモデルのワークフロー：同じ構造の派生モデルや量子化版を追加するときに選びます。ワークフローと標準パラメータを引き継ぎます。SDXLは一体型チェックポイント1個、それ以外はモデル本体・テキストエンコーダー・VAEを指定します。';
   const custom=document.createElement('p');custom.className='sub';
   custom.textContent='ワークフローを新規登録：ComfyUIで動作確認したAPI形式JSONを取り込みます。新規生成専用です。プロンプトの入力先と画像出力を選び、必要ならseed・幅・高さを指定します。未指定の項目やモデルファイル、Steps・CFGはJSONの設定を使います。';
   box.append(heading,reuse,custom);
@@ -390,7 +409,7 @@
   const hint=document.createElement('p');hint.className='sub';hint.textContent='新規生成専用 ／ JSON内のモデル・パラメータを使用。変更する場合はJSONを修正して再登録してください。';section.append(hint);
   for(const [name,target] of Object.entries(model.bindings)){const line=document.createElement('div');line.className='sub';line.textContent=({prompt:'プロンプト',seed:'seed（自動／固定を選択可）',width:'幅',height:'高さ'}[name])+': '+target.join(' / ');section.append(line);}
   const test=trialButton(model,report,1024,'ワークフロー動作確認');
-  const remove=removeButton('追加モデルを削除',async()=>{if(!confirm(model.label+' の登録を削除しますか？'))return;try{await pending;await api('/api/model-settings',{action:'remove_custom',id:model.id});await load();}catch(e){report.textContent=e.message;}});section.append(test,remove);
+  const remove=removeButton('追加モデルを削除',async()=>{if(!await appConfirm(model.label+' の登録を削除しますか？'))return;try{await pending;await api('/api/model-settings',{action:'remove_custom',id:model.id});await load();}catch(e){report.textContent=e.message;}});section.append(test,remove);
  }
  function renderAddWorkflow(box){
   const name=document.createElement('input');name.maxLength=80;field(box,'表示名',name);

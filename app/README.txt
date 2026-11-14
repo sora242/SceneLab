@@ -72,11 +72,12 @@ URLは通常 /v1 までを指定し、/chat/completions は付けません。
 全部のモデルを導入する必要はありません。使用するモデル分を用意します。
 
 標準の配置先:
+・checkpoint:   ComfyUI/models/checkpoints/
 ・diffusion:    ComfyUI/models/diffusion_models/
 ・text_encoder: ComfyUI/models/text_encoders/
 ・vae:          ComfyUI/models/vae/
 別のモデル検索パスを設定している場合は、ComfyUIで認識される場所を使用してください。
-以下はSceneLab v1.0の標準定義のファイル名です。
+以下はSceneLabの標準定義のファイル名です。
 同じ系列の別ファイルは設定画面から選択できますが、任意のモデルが互換とは限りません。
 
 Anima Aesthetic v1.1
@@ -97,6 +98,9 @@ Qwen-Image-2.1
   diffusion: qwen_image_2.1_int8_convrot.safetensors
   text_encoder: qwen3vl_8b_int8_convrot.safetensors
   vae: qwen_image_2.1_vae_bf16.safetensors
+  アップサンプラー（任意・初期値は「使用しない」）:
+    新規生成用: qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.safetensors
+    編集用: qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.safetensors
   対応: 新規生成・全体編集・範囲編集
   必要ノード: UNETLoader, CLIPLoader, VAELoader, KSampler, VAEDecode, SaveImage, LoadImage, VAEEncode, QwenImage21Cache, TextEncodeQwenImage21, EmptyLatentImage
 
@@ -104,8 +108,25 @@ Qwen-Image-2.1-Turbo
   diffusion: qwen_image_2.1_turbo_int8_convrot.safetensors
   text_encoder: qwen3vl_8b_int8_convrot.safetensors
   vae: qwen_image_2.1_vae_bf16.safetensors
+  アップサンプラー（任意・初期値は「使用しない」）:
+    新規生成用: qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.safetensors
+    編集用: qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.safetensors
   対応: 新規生成・全体編集・範囲編集
   必要ノード: UNETLoader, CLIPLoader, VAELoader, KSampler, VAEDecode, SaveImage, LoadImage, VAEEncode, QwenImage21Cache, TextEncodeQwenImage21, EmptyLatentImage, ManualSigmas, KSamplerSelect, RandomNoise, SamplerCustomAdvanced, CFGGuider, SaveImageAdvanced
+
+FLUX 3 Image Klein (Distilled INT8)
+  diffusion: flux3-image-klein-int8-convrot.safetensors
+  text_encoder: qwen3vl_4b_int8_convrot.safetensors
+  vae: flux2-vae.safetensors
+  アップサンプラー（任意・新規生成／編集共通）:
+    qwen3.5_9b_flux3_prompt_upsampler_w4a8.safetensors
+  対応: 新規生成・全体編集・範囲編集（矩形指定）
+  必要ノード: UNETLoader, CLIPLoader, VAELoader, CLIPTextEncode, KSampler, VAEDecode, SaveImage, LoadImage, EmptyFlux2LatentImage, ReferenceMultiLatent, ConditioningZeroOut, CreateBoundingBoxes, Flux3LayoutPrompt
+
+SDXL (Juggernaut XL Ragnarok)
+  checkpoint: juggernautXL_ragnarok.safetensors
+  対応: 新規生成・全体編集・範囲編集
+  必要ノード: CheckpointLoaderSimple, CLIPTextEncode, EmptyLatentImage, KSampler, VAEDecode, SaveImage, LoadImage, VAEEncode, ImageToMask, VAEEncodeForInpaint
 
 Z-Image Turbo
   diffusion: z_image_turbo_bf16.safetensors
@@ -116,9 +137,15 @@ Z-Image Turbo
 
 Qwen系の範囲編集は、輪郭線を付けた元画像と指示で編集します。
 範囲外をピクセル単位で固定する方式ではなく、編集強度スライダーはありません。
-Z-Image / Anima系は全体編集・マスク編集に対応しています。全体編集では編集強度を指定できます。
-両系列とも新規生成用JSONを1ファイル読み込み、編集時に画像・マスク用のノードを追加します。
+Kleinは元画像と指示で編集し、必要に応じて矩形1つで変更位置を指定できます。
+範囲外をピクセル単位で固定する方式ではなく、編集強度スライダーはありません。
+Z-Image / Anima / SDXL系は全体編集・マスク編集に対応しています。全体編集では編集強度を指定できます。
+これらの系列は新規生成用JSONを1ファイル読み込み、編集時に画像・マスク用のノードを追加します。
 参照画像によるキャラクター指定は、新規生成のQwen系でのみ使用できます。
+
+アップサンプラーはプロンプト拡張用で、なくても使えます。
+使用する場合はtext_encoderと同じ検索先へ配置し、設定画面で選択してください。
+使用時にはTextGenerate等のノードも必要です。設定画面の対応確認で確認してください。
 
 ノードについて：
 使用するモデルに対応したComfyUIが必要です。
@@ -209,13 +236,14 @@ Anima（モデル定義の参照元）: https://huggingface.co/circlestone-labs/
 
 9. 公開範囲とライセンス
 ----------------------
-SceneLab v1.0はWindows向け・同じPCのブラウザーから操作するローカルアプリです。
+SceneLabはWindows向け・同じPCのブラウザーから操作するローカルアプリです。
 複数ユーザー運用やインターネット向けサーバー運用、他OSの動作保証は対象外です。
 
 SceneLab本体: MIT（SceneLab直下のLICENSE）。Copyright (c) 2026 sora242。
-公式テンプレート由来のワークフロー: Comfy OrgのMIT表示を維持しています。
+公式ワークフロー由来の部分: Comfy OrgのMIT表示と、ComfyUI_examplesの許諾・免責条項を同梱しています。
 再配布時はSceneLab直下のLICENSE、app/THIRD_PARTY_NOTICES.md、app/LICENSES/を含めてください。
 モデル・外部ソフトは非同梱で、SceneLabのMITとは別条件です。
-特にQwen-Image 2.1/TurboとAnimaは独自の利用制限があります。
+特にQwen-Image 2.1/Turbo・Anima・FLUX 3 Kleinは独自の利用条件があります。
+SDXL派生モデルも、実際に取得するチェックポイントの配布元の条件に従ってください。
 モデルと生成画像の条件を混同せず、配布元の最新ライセンスを確認してください。
 外部由来部分の出所とライセンスの詳細はTHIRD_PARTY_NOTICES.mdを参照してください。

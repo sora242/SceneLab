@@ -637,7 +637,14 @@ def call_llm(history, consult=False, character=None, edit_context=None):
         system_text += "外見・設定メモ: " + (str(character.get("notes", "")).strip() or "未登録") + "\n"
         system_text += "参照画像の登録枚数: " + str(len(character.get("images", []))) + "枚\n"
         system_text += "このキャラクターの外見上の特徴をプロンプトに反映してください。新規生成では参照画像は本人確認・外見参照としてのみ扱い、参照画像の背景、構図、カメラ距離、ポーズ、表情、服装を自動的にコピーしないでください。ユーザーが指定した行動・場面・構図を最優先し、その行動が画像内ではっきり見える具体的な完成プロンプトにしてください。画像モデルへ渡す完成プロンプトでは、名前そのものではなく外見の具体的特徴を記述してください。編集時のみ、ユーザーが変更を指示していない元画像の要素を維持してください。"
-    if edit_context:
+    if edit_context and edit_context.get('rectangle'):
+        system_text += (
+            "\n\n【今回の編集範囲】ユーザーは元画像上の矩形を選択しています。"
+            "直近の変更要求を、選択した部分だけに適用する短い英語の編集指示にしてください。"
+            "他の要素は維持してください。矩形の座標はアプリ側で渡すため、座標や目印線の描画・除去の指示は不要です。"
+            "過去の全体変更指示より、今回の局所的な変更要求を優先してください。"
+        )
+    elif edit_context:
         color = edit_context["color"]
         system_text += (
             "\n\n【今回の編集範囲：最優先】元画像には編集位置を示す " + color + " の輪郭線があります。"
@@ -1107,18 +1114,50 @@ def generate_qwen_image(prompt, width, height, mode="new", source_image=None, ma
     return queue_and_wait(wf)
 
 
-def generate_image(prompt, width, height, mode="new", source_image=None, mask_data=None, marked_image_data=None, img2img_denoise=0.70, character=None, model="qwen21_turbo", parameter_mode=None, image_batch=None):
+def generate_image(prompt, width, height, mode="new", source_image=None, mask_data=None, marked_image_data=None, img2img_denoise=0.70, character=None, model="qwen21_turbo", parameter_mode=None, image_batch=None, edit_region=None):
     IMAGE_PROMPT.set(prompt)
     profile = model_registry.get(model, parameter_mode or ("edit" if mode in ("full", "inpaint") else "chat"))
     if mode != "new" and not profile["capabilities"].get("edit"):
         raise ValueError(profile["label"] + " は新規生成専用です。")
     if mode == "inpaint" and not profile["capabilities"].get("mask_method"):
         raise ValueError(profile["label"] + " はマスク編集に対応していません。")
+    edit_region = image_workflows.validate_edit_region(edit_region)
+    if edit_region and (profile['backend'] != 'flux3' or mode != 'inpaint'):
+        raise ValueError('矩形指定はKleinの範囲編集で使用してください。')
+    if profile['backend'] == 'flux3' and mode == 'inpaint':
+        if not edit_region:
+            raise ValueError('編集したい範囲を矩形で指定してください。')
+        profile['required_nodes'] = list(dict.fromkeys(profile['required_nodes'] + ['CreateBoundingBoxes', 'Flux3LayoutPrompt']))
     model_registry.ensure_ready(profile, comfy_url())
     with image_resources(model, mode, width, height, image_batch):
         if profile["backend"] == "user_workflow":
             wf = model_registry.user_workflows.build(profile, prompt, width, height, generation_seed(profile))
             return queue_and_wait(wf, timeout=1200, output_node=profile['output_node'])
+        if profile["backend"] == "sdxl":
+            if mode not in ("new", "full", "inpaint"):
+                raise ValueError("SDXLの編集モードが不正です。")
+            source_name = mask_name = None
+            if mode != "new":
+                if not source_image:
+                    raise ValueError("編集元画像を選択してください。")
+                source_name = upload_bytes_to_comfy(get_previous_image_bytes(source_image), "scenelab_sdxl_source.png")
+            if mode == "inpaint":
+                if not isinstance(mask_data, str) or not mask_data:
+                    raise ValueError("マスク画像がありません。編集したい範囲を塗ってください。")
+                data = mask_data.split(",", 1)[-1]
+                mask_name = upload_bytes_to_comfy(base64.b64decode(data, validate=True), "scenelab_sdxl_mask.png")
+            wf = image_workflows.build_sdxl(prompt, width, height, generation_seed(profile), profile, source_name, img2img_denoise, mask_name)
+            return queue_and_wait(wf, timeout=1200, output_node="7")
+        if profile["backend"] == "flux3":
+            if mode not in ("new", "full", "inpaint"):
+                raise ValueError("FLUX 3 Kleinの編集モードが不正です。")
+            source_name = None
+            if mode in ("full", "inpaint"):
+                if not source_image:
+                    raise ValueError("編集元画像を選択してください。")
+                source_name = upload_bytes_to_comfy(get_previous_image_bytes(source_image), "scenelab_flux3_source.png")
+            wf = image_workflows.build_flux3(prompt, width, height, generation_seed(profile), profile, source_name, edit_region)
+            return queue_and_wait(wf, timeout=1200, output_node="9")
         if profile["backend"] == "anima":
             if mode not in ("new", "full", "inpaint"):
                 raise ValueError("Animaの編集モードが不正です。")
@@ -1301,16 +1340,16 @@ button.mutedSmall.galleryCopied:hover{background:#2c705a}
 <aside id="leftPanel">
   <div id="leftPanelTitle" class="panelTitle">New image</div>
   <div id="generationModelGroup" class="controlGroup modeGroup"><div class="label">画像生成モデル</div><select id="generationModel" class="select"><option value="qwen21_turbo" selected>Qwen-Image-2.1-Turbo</option><option value="z_image_turbo">Z-Image Turbo</option></select><div class="sub">チャットでの画像生成、探索・ひらめきで使用する画像モデルです。</div></div>
-  <div id="editModelGroup" class="controlGroup modeGroup hidden"><div class="label">画像編集モデル</div><select id="editModel" class="select"><option value="qwen21_turbo" selected>Qwen-Image-2.1-Turbo</option><option value="z_image_turbo">Z-Image Turbo</option></select><div class="sub">編集画面の全体編集・マスク編集で使います。</div></div>
+  <div id="editModelGroup" class="controlGroup modeGroup hidden"><div class="label">画像編集モデル</div><select id="editModel" class="select"><option value="qwen21_turbo" selected>Qwen-Image-2.1-Turbo</option><option value="z_image_turbo">Z-Image Turbo</option></select><div class="sub">編集画面の全体編集・範囲編集で使います。</div></div>
   <div id="countGroup" class="controlGroup modeGroup"><div class="label">生成枚数</div><div class="stepper"><button type="button" id="countMinus">−</button><input id="count" type="number" min="1" step="1" value="1"><button type="button" id="countPlus">＋</button></div><div class="sub">新規生成する枚数です。複数枚の場合は、同じ最終プロンプトでシードだけを変えて生成します。</div></div>
   <div id="sizeGroup" class="controlGroup modeGroup"><div class="label">画像サイズ</div><div class="sizeRow"><input id="width" type="number" min="512" max="1536" step="64" value="1024"><span class="x">×</span><input id="height" type="number" min="512" max="1536" step="64" value="1024"></div><div class="presetRow"><button type="button" class="preset" data-w="1024" data-h="1024">1:1</button><button type="button" class="preset" data-w="832" data-h="1216">縦</button><button type="button" class="preset" data-w="1216" data-h="832">横</button></div><div class="sub">新規生成のサイズです。512〜1536px、64px刻みに自動調整します。</div></div>
-  <div id="strengthGroup" class="controlGroup modeGroup hidden"><div class="label">img2img 変更強度</div><div class="strengthRow"><input id="editStrength" type="range" min="0.10" max="1.00" step="0.05" value="0.70"><input id="editStrengthValue" class="strengthValue" type="number" min="0.10" max="1.00" step="0.05" value="0.70"></div><div id="strengthHint" class="sub">Z・Animaのマスクなし編集に使います。マスクありは強度1固定、Qwenでは使用しません。</div></div>
+  <div id="strengthGroup" class="controlGroup modeGroup hidden"><div class="label">img2img 変更強度</div><div class="strengthRow"><input id="editStrength" type="range" min="0.10" max="1.00" step="0.05" value="0.70"><input id="editStrengthValue" class="strengthValue" type="number" min="0.10" max="1.00" step="0.05" value="0.70"></div><div id="strengthHint" class="sub">対応モデルのマスクなし全体編集に使います。範囲指定中は強度1固定です。</div></div>
   <div id="characterGroup" class="controlGroup modeGroup"><div class="label">使用キャラクター</div><select id="characterSelect" class="select"><option value="">使用しない</option></select><button type="button" id="manageCharacters" class="mutedSmall" style="width:100%;margin-top:8px">キャラクター管理</button><div class="charSelectHint">Qwen系モデル専用。登録した画像を参照して、キャラクターの外見を新規生成に反映します。</div></div>
   <div id="status" class="status"></div>
 </aside>
 <main id="workspace">
   <section id="chatView" class="view active"><div class="chatScroll"><div id="chat" class="chat"><div class="msg assistant">こんにちは！画像について相談することも、そのまま生成することもできます。</div></div></div><div class="composer"><div class="composerInner"><textarea id="input" placeholder="画像生成：AIがプロンプト作成 ／ 最終プロンプトから画像生成：入力文をそのまま使用"></textarea><div class="composerActions"><button id="consult" class="consult">チャット</button><button id="send" class="send" title="LLMでプロンプトを作成して生成">画像生成</button><button id="directSend" class="send" style="width:112px;background:#247c68" title="入力文をLLMに通さず、そのまま画像モデルへ送信">最終プロンプトから画像生成</button></div></div></div></section>
-  <section id="editView" class="view"><div class="editWrap"><div class="editTop"><div><div class="editTitle">画像編集</div><div class="editorHelp">編集したい内容を入力してください。チャット履歴も引き継ぐため、必要に応じて新規チャットにしてください。</div></div></div><div class="stageWrap"><div id="stage" class="stage"><img id="source" alt="編集対象の画像"><canvas id="paint" style="opacity:0.65"></canvas></div></div><div class="editControls"><button id="paintToggle" class="secondary">範囲指定：OFF</button><label class="brush">ブラシ <input id="brush" type="range" min="10" max="140" value="48"></label><button id="undoPaint" class="secondary" disabled>ひと塗り戻す</button><button id="clear" class="secondary">範囲指定をクリア</button></div><div class="editComposer"><textarea id="editInput" placeholder="編集内容を入力。例：背景を明るくして / 選択した部分の色を変えて"></textarea><button id="editSend" class="send">生成</button></div></div></section>
+  <section id="editView" class="view"><div class="editWrap"><div class="editTop"><div><div class="editTitle">画像編集</div><div class="editorHelp">編集したい内容を入力してください。チャット履歴も引き継ぐため、必要に応じて新規チャットにしてください。</div></div></div><div class="stageWrap"><div id="stage" class="stage"><img id="source" alt="編集対象の画像"><canvas id="paint" style="opacity:0.65"></canvas></div></div><div id="regionHelp" class="editorHelp" hidden></div><div class="editControls"><button id="paintToggle" class="secondary">範囲指定：OFF</button><label class="brush">ブラシ <input id="brush" type="range" min="10" max="140" value="48"></label><button id="undoPaint" class="secondary" disabled>ひと塗り戻す</button><button id="clear" class="secondary">範囲指定をクリア</button></div><div class="editComposer"><textarea id="editInput" placeholder="編集内容を入力。例：背景を明るくして / 選択した部分の色を変えて"></textarea><button id="editSend" class="send">生成</button></div></div></section>
   <section id="characterView" class="view"><div class="characterPage"><div class="characterHead"><div><div class="editTitle">キャラクター管理</div><div class="editorHelp">登録したキャラクターは新しいチャットでも使えます。参照画像は1人につき最大4枚で、Qwen系モデルの新規生成で使用できます。</div></div><button type="button" id="registerFromSelected" class="primarySmall">選択画像から登録</button></div><div id="characterGrid" class="characterGrid"></div><div id="characterEmpty" class="characterEmpty" style="display:none">まだキャラクターが登録されていません。<br>右側の生成画像メニューから「キャラクターとして登録」を選んでください。</div><div id="characterDetail" class="characterDetail" style="display:none"></div></div></section>
 </main>
 <aside id="rightPanel"><div class="galleryHeader"><div class="panelTitle" style="margin:0">Images</div><div class="galleryHeaderActions"><button type="button" id="deleteNonFavorites" class="galleryCleanup">★以外を全削除</button><div id="galleryCount" class="galleryCount">0枚</div></div></div><div id="gallery" class="gallery"></div><div id="emptyGallery" class="emptyGallery">生成した画像がここに並びます。<br>画像をクリックすると、その画像を選択して編集画面へ移動します。</div></aside>
@@ -1373,6 +1412,7 @@ const countInput=document.getElementById('count'),widthInput=document.getElement
 const chatTab=document.getElementById('chatTab'),editTab=document.getElementById('editTab'),characterTab=document.getElementById('characterTab'),chatView=document.getElementById('chatView'),editView=document.getElementById('editView'),characterView=document.getElementById('characterView');
 const gallery=document.getElementById('gallery'),galleryCount=document.getElementById('galleryCount'),emptyGallery=document.getElementById('emptyGallery');
 const source=document.getElementById('source'),canvas=document.getElementById('paint'),ctx=canvas.getContext('2d'),toggle=document.getElementById('paintToggle'),brush=document.getElementById('brush');
+let editRectangle=null,editSelectionKind='brush';
 const history=[];let painting=false,paintEnabled=false,hasMask=false,lastPoint=null,currentSourceInfo=null,currentSelectedThumb=null,totalImages=0,characters=[],selectedCharacterId=readPreference('character_id')||'';let registeringSource=null;let galleryItems=new Map();
 
 function showView(name){
@@ -1420,8 +1460,8 @@ editStrength.oninput=()=>{editStrengthValue.value=Number(editStrength.value).toF
 editStrengthValue.onchange=()=>storePreference('edit_strength',syncStrength(editStrengthValue.value));
 function add(role,text,badge){const d=document.createElement('div');d.className='msg '+role;if(badge){const b=document.createElement('div');b.className='badge';b.textContent=badge;d.appendChild(b);d.appendChild(document.createElement('br'))}d.appendChild(document.createTextNode(text||''));chat.appendChild(d);document.querySelector('.chatScroll').scrollTop=document.querySelector('.chatScroll').scrollHeight;return d}
 let paintUndo=null;
-function resetPaint(){ctx.clearRect(0,0,canvas.width,canvas.height);hasMask=false;syncEditStrengthControls();paintUndo=null;painting=false;lastPoint=null;document.getElementById('undoPaint').disabled=true}
-document.getElementById('undoPaint').onclick=()=>{if(!paintUndo||painting)return;ctx.putImageData(paintUndo.image,0,0);hasMask=paintUndo.hasMask;syncEditStrengthControls();paintUndo=null;document.getElementById('undoPaint').disabled=true;};
+function resetPaint(){ctx.clearRect(0,0,canvas.width,canvas.height);editRectangle=null;hasMask=false;syncEditStrengthControls();paintUndo=null;painting=false;lastPoint=null;document.getElementById('undoPaint').disabled=true}
+document.getElementById('undoPaint').onclick=()=>{if(!paintUndo||painting)return;ctx.putImageData(paintUndo.image,0,0);hasMask=paintUndo.hasMask;editRectangle=paintUndo.rectangle||null;syncEditStrengthControls();paintUndo=null;document.getElementById('undoPaint').disabled=true;};
 function showEditor(url,autoEnable=false){source.onload=()=>{canvas.width=source.naturalWidth;canvas.height=source.naturalHeight;resetPaint()};source.src=url;paintEnabled=autoEnable;toggle.classList.toggle('active',paintEnabled);toggle.textContent='範囲指定：'+(paintEnabled?'ON':'OFF');canvas.style.pointerEvents=paintEnabled?'auto':'none'}
 function selectAsSource(info,url,thumb,openEdit=true){currentSourceInfo=info;showEditor(url,false);if(currentSelectedThumb)currentSelectedThumb.classList.remove('selected');currentSelectedThumb=thumb||null;if(currentSelectedThumb)currentSelectedThumb.classList.add('selected');if(openEdit)showView('edit')}
 function pasteFinalPromptIntoChat(prompt){
@@ -1468,7 +1508,38 @@ async function restoreGallery(){try{const r=await fetch('/api/gallery');const d=
 toggle.onclick=()=>{paintEnabled=!paintEnabled;if(!paintEnabled){resetPaint();painting=false;lastPoint=null;}toggle.classList.toggle('active',paintEnabled);toggle.textContent='範囲指定：'+(paintEnabled?'ON':'OFF');canvas.style.pointerEvents=paintEnabled?'auto':'none'};document.getElementById('clear').onclick=resetPaint;canvas.style.pointerEvents='none';
 function pt(e){const r=canvas.getBoundingClientRect();return{x:(e.clientX-r.left)*canvas.width/r.width,y:(e.clientY-r.top)*canvas.height/r.height}}
 function stroke(a,b){const r=canvas.getBoundingClientRect(),scale=canvas.width/r.width;ctx.strokeStyle='rgb(255,70,70)';ctx.lineWidth=Number(brush.value)*scale;ctx.lineCap='round';ctx.lineJoin='round';ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();if(!hasMask){hasMask=true;syncEditStrengthControls();}}
-canvas.onpointerdown=e=>{if(!paintEnabled||painting||!canvas.width||!canvas.height)return;paintUndo={image:ctx.getImageData(0,0,canvas.width,canvas.height),hasMask};document.getElementById('undoPaint').disabled=false;painting=true;canvas.setPointerCapture(e.pointerId);lastPoint=pt(e);stroke(lastPoint,lastPoint)};canvas.onpointermove=e=>{if(!painting)return;const p=pt(e);stroke(lastPoint,p);lastPoint=p};canvas.onpointerup=()=>{painting=false;lastPoint=null;document.getElementById('undoPaint').disabled=!paintUndo};canvas.onpointercancel=canvas.onpointerup;
+function usesEditRectangle(){return window.imageModelUsesBoxes?.(editModel.value)??editModel.value==='flux3_klein_distilled';}
+function drawEditRectangle(rect){
+ ctx.clearRect(0,0,canvas.width,canvas.height);
+ if(!rect)return;
+ const x=rect.x*canvas.width,y=rect.y*canvas.height,w=rect.width*canvas.width,h=rect.height*canvas.height;
+ ctx.fillStyle='rgba(255,35,35,0.45)';ctx.fillRect(x,y,w,h);
+ ctx.strokeStyle='rgb(255,35,35)';ctx.lineWidth=Math.max(2,canvas.width/canvas.getBoundingClientRect().width*2);ctx.lineJoin='miter';ctx.strokeRect(x,y,w,h);
+}
+canvas.onpointerdown=e=>{
+ if(!paintEnabled||painting||!canvas.width||!canvas.height||e.button!==0)return;
+ paintUndo={image:ctx.getImageData(0,0,canvas.width,canvas.height),hasMask,rectangle:editRectangle};
+ document.getElementById('undoPaint').disabled=false;painting=true;canvas.setPointerCapture(e.pointerId);lastPoint=pt(e);
+ if(usesEditRectangle()){editRectangle=null;hasMask=false;drawEditRectangle(null);syncEditStrengthControls();}
+ else stroke(lastPoint,lastPoint);
+};
+canvas.onpointermove=e=>{
+ if(!painting)return;const p=pt(e);
+ if(usesEditRectangle()){editRectangle=RegionOutline.rectangle(lastPoint,p,canvas.width,canvas.height);hasMask=!!editRectangle;drawEditRectangle(editRectangle);}
+ else{stroke(lastPoint,p);lastPoint=p;}
+};
+function finishSelection(e,cancelled=false){
+ if(!painting)return;
+ if(usesEditRectangle()){
+  if(!cancelled&&e)editRectangle=RegionOutline.rectangle(lastPoint,pt(e),canvas.width,canvas.height);
+  if(cancelled||!editRectangle){editRectangle=paintUndo?.rectangle||null;ctx.putImageData(paintUndo.image,0,0);}
+  else drawEditRectangle(editRectangle);
+  hasMask=!!editRectangle;syncEditStrengthControls();
+ }
+ painting=false;lastPoint=null;document.getElementById('undoPaint').disabled=!paintUndo;
+}
+canvas.onpointerup=e=>finishSelection(e);canvas.onpointercancel=e=>finishSelection(e,true);
+
 function exportOutlineImage(){
  if(!hasMask||!source.complete||!source.naturalWidth)throw Error('編集元画像と塗った範囲を確認してください。');
  const out=document.createElement('canvas');out.width=canvas.width;out.height=canvas.height;
@@ -1501,14 +1572,14 @@ document.getElementById('inspirePromptImage').onclick=()=>{const prompt=promptMo
 document.getElementById('promptCharacter').onclick=()=>{if(!promptModalItem)return;const item=promptModalItem;closePromptModal();openCharacterModal(item.info,item.url)};
 async function setFavorite(item,value,button=null){const gid=item.info&&item.info.gallery_id;if(!gid)return;try{const r=await fetch('/api/gallery/favorite',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({gallery_id:gid,favorite:value})});const d=await readApiResponse(r);if(!r.ok)throw new Error(d.error||'更新できませんでした');item.favorite=!!d.favorite;if(button){button.classList.toggle('on',item.favorite);button.textContent=item.favorite?'★':'☆';button.title=item.favorite?'お気に入り解除':'お気に入り登録'}const thumb=gallery.querySelector('[data-gallery-id="'+gid+'"]');if(thumb){const b=thumb.querySelector('.favoriteBadge');if(b){b.classList.toggle('on',item.favorite);b.textContent=item.favorite?'★':'☆';b.title=item.favorite?'お気に入り解除':'お気に入り登録'}}status.textContent=item.favorite?'お気に入りに登録しました。':'お気に入りを解除しました。';}catch(e){status.textContent='お気に入り更新エラー：'+e.message}}
 function clearSelectedIfDeleted(gid){if(currentSourceInfo&&currentSourceInfo.gallery_id===gid){currentSourceInfo=null;currentSelectedThumb=null;source.removeAttribute('src');resetPaint();}}
-async function deleteGalleryItem(item){const gid=item&&item.info&&item.info.gallery_id;if(!gid)return;if(!confirm('この画像をギャラリーから完全に削除しますか？'))return;try{const r=await fetch('/api/gallery/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({gallery_id:gid})});const d=await readApiResponse(r);if(!r.ok)throw new Error(d.error||'削除できませんでした');const thumb=gallery.querySelector('[data-gallery-id="'+gid+'"]');if(thumb)thumb.remove();galleryItems.delete(gid);refreshGalleryCopyButtons();clearSelectedIfDeleted(gid);totalImages=Math.max(0,totalImages-1);galleryCount.textContent=totalImages+'枚';emptyGallery.style.display=totalImages?'none':'block';closePromptModal();status.textContent='画像を削除しました。';}catch(e){status.textContent='画像削除エラー：'+e.message}}
-document.getElementById('deletePromptImage').onclick=()=>{if(promptModalItem)deleteGalleryItem(promptModalItem)};document.getElementById('deleteNonFavorites').onclick=async()=>{const favorites=[...galleryItems.values()].filter(x=>x.favorite).length;const nonfav=totalImages-favorites;if(nonfav<=0){status.textContent='削除対象のお気に入り以外の画像はありません。';return}if(!confirm('お気に入り以外の画像 '+nonfav+'枚を完全に削除します。★付き画像だけ残します。よろしいですか？'))return;try{const r=await fetch('/api/gallery/delete-nonfavorites',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});const d=await readApiResponse(r);if(!r.ok)throw new Error(d.error||'一括削除できませんでした');gallery.innerHTML='';galleryItems.clear();refreshGalleryCopyButtons();totalImages=0;currentSourceInfo=null;currentSelectedThumb=null;source.removeAttribute('src');resetPaint();await restoreGallery();emptyGallery.style.display=totalImages?'none':'block';status.textContent='お気に入り以外を '+d.deleted+'枚削除しました。';}catch(e){status.textContent='一括削除エラー：'+e.message}};
+async function deleteGalleryItem(item){const gid=item&&item.info&&item.info.gallery_id;if(!gid)return;if(!await appConfirm('この画像をギャラリーから完全に削除しますか？'))return;try{const r=await fetch('/api/gallery/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({gallery_id:gid})});const d=await readApiResponse(r);if(!r.ok)throw new Error(d.error||'削除できませんでした');const thumb=gallery.querySelector('[data-gallery-id="'+gid+'"]');if(thumb)thumb.remove();galleryItems.delete(gid);refreshGalleryCopyButtons();clearSelectedIfDeleted(gid);totalImages=Math.max(0,totalImages-1);galleryCount.textContent=totalImages+'枚';emptyGallery.style.display=totalImages?'none':'block';closePromptModal();status.textContent='画像を削除しました。';}catch(e){status.textContent='画像削除エラー：'+e.message}}
+document.getElementById('deletePromptImage').onclick=()=>{if(promptModalItem)deleteGalleryItem(promptModalItem)};document.getElementById('deleteNonFavorites').onclick=async()=>{const favorites=[...galleryItems.values()].filter(x=>x.favorite).length;const nonfav=totalImages-favorites;if(nonfav<=0){status.textContent='削除対象のお気に入り以外の画像はありません。';return}if(!await appConfirm('お気に入り以外の画像 '+nonfav+'枚を完全に削除します。★付き画像だけ残します。よろしいですか？'))return;try{const r=await fetch('/api/gallery/delete-nonfavorites',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});const d=await readApiResponse(r);if(!r.ok)throw new Error(d.error||'一括削除できませんでした');gallery.innerHTML='';galleryItems.clear();refreshGalleryCopyButtons();totalImages=0;currentSourceInfo=null;currentSelectedThumb=null;source.removeAttribute('src');resetPaint();await restoreGallery();emptyGallery.style.display=totalImages?'none':'block';status.textContent='お気に入り以外を '+d.deleted+'枚削除しました。';}catch(e){status.textContent='一括削除エラー：'+e.message}};
 function imageUrl(c,img){return '/character-image?id='+encodeURIComponent(c.id)+'&file='+encodeURIComponent(img.filename)}
 function renderCharacterSelect(){const keep=selectedCharacterId;characterSelect.innerHTML='<option value="">使用しない</option>';characters.forEach(c=>{const o=document.createElement('option');o.value=c.id;o.textContent=c.name+'（'+c.images.length+'枚）';characterSelect.appendChild(o)});selectedCharacterId=characters.some(c=>c.id===keep)?keep:'';characterSelect.value=selectedCharacterId;storePreference('character_id',selectedCharacterId)}
 function renderCharacterManager(){characterGrid.innerHTML='';characterEmpty.style.display=characters.length?'none':'block';characters.forEach(c=>{const card=document.createElement('button');card.type='button';card.className='characterCard'+(c.id===selectedCharacterId?' active':'');const img=document.createElement('img');img.alt=c.name;if(c.images.length)img.src=imageUrl(c,c.images[0]);const nm=document.createElement('div');nm.className='characterCardName';nm.textContent=c.name;const meta=document.createElement('div');meta.className='characterCardMeta';meta.textContent='参照画像 '+c.images.length+'/4';card.append(img,nm,meta);card.onclick=()=>{selectedCharacterId=c.id;characterSelect.value=c.id;storePreference('character_id',c.id);renderCharacterManager();renderCharacterDetail(c)};characterGrid.appendChild(card)});const c=selectedCharacter();if(c)renderCharacterDetail(c);else{characterDetail.style.display='none';characterDetail.innerHTML=''}}
 function renderCharacterDetail(c){if(!c)return;characterDetail.style.display='block';characterDetail.innerHTML='';const head=document.createElement('div');head.style.display='flex';head.style.alignItems='center';head.style.justifyContent='space-between';head.style.gap='12px';const title=document.createElement('div');title.className='editTitle';title.textContent=c.name;const deleteCharacter=document.createElement('button');deleteCharacter.type='button';deleteCharacter.className='dangerSmall';deleteCharacter.textContent='キャラクターを削除';deleteCharacter.onclick=()=>removeCharacter(c.id,c.name);head.append(title,deleteCharacter);const notes=document.createElement('div');notes.className='editorHelp';notes.textContent=c.notes||'外見メモはまだ登録されていません。';const meta=document.createElement('div');meta.className='sub';meta.textContent='参照画像 '+c.images.length+'/4';const imgs=document.createElement('div');imgs.className='characterDetailImages';c.images.forEach(img=>{const wrap=document.createElement('div');const im=document.createElement('img');im.src=imageUrl(c,img);im.alt=c.name+'の参照画像';const del=document.createElement('button');del.type='button';del.className='mutedSmall';del.style.width='100%';del.style.marginTop='5px';del.textContent='画像を削除';del.onclick=()=>removeCharacterImage(c.id,img.filename);wrap.append(im,del);imgs.appendChild(wrap)});characterDetail.append(head,notes,meta,imgs)}
-async function removeCharacter(id,name){if(!confirm('キャラクター「'+name+'」を参照画像ごと削除しますか？'))return;try{const r=await fetch('/api/characters/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({character_id:id})});const d=await readApiResponse(r);if(!r.ok)throw new Error(d.error||'削除できませんでした');characters=d.characters||[];if(selectedCharacterId===id)selectedCharacterId='';renderCharacterSelect();renderCharacterManager();status.textContent='キャラクター「'+name+'」を削除しました。';}catch(e){status.textContent='削除エラー：'+e.message}}
-async function removeCharacterImage(id,filename){if(!confirm('この参照画像を削除しますか？'))return;try{const r=await fetch('/api/characters/remove-image',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({character_id:id,filename})});const d=await readApiResponse(r);if(!r.ok)throw new Error(d.error||'削除できませんでした');characters=d.characters||[];renderCharacterSelect();renderCharacterManager();status.textContent='参照画像を削除しました。'}catch(e){status.textContent='削除エラー：'+e.message}}
+async function removeCharacter(id,name){if(!await appConfirm('キャラクター「'+name+'」を参照画像ごと削除しますか？'))return;try{const r=await fetch('/api/characters/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({character_id:id})});const d=await readApiResponse(r);if(!r.ok)throw new Error(d.error||'削除できませんでした');characters=d.characters||[];if(selectedCharacterId===id)selectedCharacterId='';renderCharacterSelect();renderCharacterManager();status.textContent='キャラクター「'+name+'」を削除しました。';}catch(e){status.textContent='削除エラー：'+e.message}}
+async function removeCharacterImage(id,filename){if(!await appConfirm('この参照画像を削除しますか？'))return;try{const r=await fetch('/api/characters/remove-image',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({character_id:id,filename})});const d=await readApiResponse(r);if(!r.ok)throw new Error(d.error||'削除できませんでした');characters=d.characters||[];renderCharacterSelect();renderCharacterManager();status.textContent='参照画像を削除しました。'}catch(e){status.textContent='削除エラー：'+e.message}}
 async function refreshCharacters(){try{const r=await fetch('/api/characters');const d=await readApiResponse(r);if(!r.ok)throw new Error(d.error||'キャラクター一覧を取得できません');characters=d.characters||[];renderCharacterSelect();renderCharacterManager()}catch(e){status.textContent='キャラクターの読み込みに失敗しました：'+e.message}}
 characterSelect.onchange=()=>{selectedCharacterId=characterSelect.value;storePreference('character_id',selectedCharacterId);renderCharacterManager()};
 function syncEditStrengthControls(){
@@ -1516,10 +1587,18 @@ function syncEditStrengthControls(){
  editStrength.disabled=!supportsStrength||hasMask;
  editStrengthValue.disabled=editStrength.disabled;
  document.getElementById('strengthHint').textContent=!supportsStrength
-  ? 'Qwenの指示編集ではこの変更強度を使用しません。'
+  ? modelLabel(editModel.value)+'の編集では、この変更強度を使用しません。'
   : hasMask ? '範囲指定中は変更強度1で固定です。' : 'マスクなしの全体編集に使います。';
 }
-function syncModelControls(){syncEditStrengthControls();toggle.disabled=false;brush.disabled=false;localStorage.setItem('flashnext_generation_model',generationModel.value);localStorage.setItem('flashnext_edit_model',editModel.value)}
+function syncModelControls(){
+ const boxes=usesEditRectangle(),kind=boxes?'rectangle':'brush';
+ if(editSelectionKind!==kind){editSelectionKind=kind;resetPaint();}
+ syncEditStrengthControls();toggle.disabled=false;brush.disabled=boxes;brush.closest('label').style.display=boxes?'none':'';
+ document.getElementById('undoPaint').textContent=boxes?'矩形を戻す':'ひと塗り戻す';
+ const help=document.getElementById('regionHelp');help.hidden=!boxes;
+ help.textContent='範囲指定をONにしてドラッグすると矩形を1つ指定できます。描き直すと置き換わります。指定しなければ文章だけで編集します。';
+ localStorage.setItem('flashnext_generation_model',generationModel.value);localStorage.setItem('flashnext_edit_model',editModel.value);
+}
 
 generationModel.value=localStorage.getItem('flashnext_generation_model')||'qwen21_turbo';editModel.value=localStorage.getItem('flashnext_edit_model')||'qwen21_turbo';generationModel.onchange=syncModelControls;editModel.onchange=syncModelControls;syncModelControls();
 function openCharacterModal(info,url){registeringSource=info;characterModalError.textContent='';document.getElementById('registerImageInfo').textContent='選択した生成画像を保存します。';document.getElementById('registerImagePreview').src=url||('/image?'+new URLSearchParams({filename:info.filename||'',subfolder:info.subfolder||'',type:info.type||'output'}).toString());characterTarget.innerHTML='<option value="__new__">新しいキャラクターを作成</option>';characters.forEach(c=>{const o=document.createElement('option');o.value=c.id;o.textContent=c.name+'（'+c.images.length+'/4枚）';o.disabled=c.images.length>=4;characterTarget.appendChild(o)});characterTarget.value='__new__';characterName.disabled=false;characterName.value='';characterNotes.value='';characterModal.classList.add('open');characterName.focus()}
@@ -1543,8 +1622,8 @@ async function submit(fromEdit=false,chatAction='generate'){
  const userEntry={role:'user',content:text};
  history.push(userEntry);
  send.disabled=true;directSend.disabled=true;consult.disabled=true;editSend.disabled=true;
- status.textContent=fromEdit?(hasMask?'部分編集用プロンプトを作成しています…':'全体編集用プロンプトを作成しています…'):(chatAction==='consult'?'LLMと相談しています…':direct?'入力したプロンプトで画像を生成しています…':'新規生成用プロンプトを作成しています…');
- const progressMode=fromEdit?(hasMask?'部分編集':'全体編集'):(chatAction==='consult'?'LLMとの会話':'新規画像生成');
+ status.textContent=fromEdit?(hasMask?'部分編集用プロンプトを作成しています…':usesEditRectangle()?'編集用プロンプトを作成しています…':'全体編集用プロンプトを作成しています…'):(chatAction==='consult'?'LLMと相談しています…':direct?'入力したプロンプトで画像を生成しています…':'新規生成用プロンプトを作成しています…');
+ const progressMode=fromEdit?(hasMask?'部分編集':usesEditRectangle()?'指示による編集':'全体編集'):(chatAction==='consult'?'LLMとの会話':'新規画像生成');
  const progressSize=fromEdit?'':' ｜ '+(window.imageSizeLabel?.(generationModel.value,width,height)??(width+'×'+height));
  const progressModel=fromEdit?editModel.options[editModel.selectedIndex].text:generationModel.options[generationModel.selectedIndex].text;
  cancelAfterCurrent=false;
@@ -1591,11 +1670,12 @@ async function submit(fromEdit=false,chatAction='generate'){
    }catch(_e){}finally{stagePollBusy=false}
  },300);
  try{
-  const mask=exportMask();
+  const editRegion=fromEdit&&usesEditRectangle()?editRectangle:null;
+  const mask=fromEdit&&!usesEditRectangle()?exportMask():null;
   const markedImage=fromEdit&&hasMask&&(window.imageModelUsesOutline?.(editModel.value)??editModel.value.startsWith('qwen21'))?exportOutlineImage():null;
   // 複数枚の新規生成ではLLMでプロンプトを1回準備し、まず1枚目を生成する。
   const firstCount=(!fromEdit&&chatAction!=='consult'&&count>1)?1:count;
-  const r=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({progress_id:progressId,cancel_id:direct?undefined:progressId,history,direct_prompt:direct?text:null,mask,marked_image:markedImage,count:firstCount,width,height,source_image:currentSourceInfo,from_edit:fromEdit,chat_action:chatAction,edit_strength:syncStrength(editStrength.value),selected_character_id:fromEdit?'':(window.characterForGeneration?window.characterForGeneration():selectedCharacterId),generation_model:generationModel.value,edit_model:editModel.value})});
+  const r=await fetch('/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({progress_id:progressId,cancel_id:direct?undefined:progressId,history,direct_prompt:direct?text:null,mask,edit_region:editRegion,marked_image:markedImage,count:firstCount,width,height,source_image:currentSourceInfo,from_edit:fromEdit,chat_action:chatAction,edit_strength:syncStrength(editStrength.value),selected_character_id:fromEdit?'':(window.characterForGeneration?window.characterForGeneration():selectedCharacterId),generation_model:generationModel.value,edit_model:editModel.value})});
   const data=await readApiResponse(r);
   if(!r.ok)throw new Error(data.error||'エラー');
   if(data.cancelled){
@@ -1629,7 +1709,7 @@ async function submit(fromEdit=false,chatAction='generate'){
     }
   }
   if((data.images&&data.images.length)||count>1){
-    if(cancelAfterCurrent){status.textContent='';updateProgress('生成を中止しました','完成済み画像はそのまま残しています。');}else{status.textContent=fromEdit?(data.mode==='inpaint'?(Boolean(window.imageModelSupportsStrength?.(editModel.value))?'マスク編集しました。':'輪郭線の目印を使って編集しました。'):'全体編集しました。'):'新規画像を生成しました。右の画像をクリックすると編集できます。';}
+    if(cancelAfterCurrent){status.textContent='';updateProgress('生成を中止しました','完成済み画像はそのまま残しています。');}else{status.textContent=fromEdit?(data.mode==='inpaint'?(usesEditRectangle()?'矩形で指定した位置を編集しました。':Boolean(window.imageModelSupportsStrength?.(editModel.value))?'マスク編集しました。':'輪郭線の目印を使って編集しました。'):usesEditRectangle()?'指示に沿って編集しました。':'全体編集しました。'):'新規画像を生成しました。右の画像をクリックすると編集できます。';}
   }else if(data.mode==='consult'){status.textContent='会話のみです。画像は生成していません。内容が固まったら「画像生成」を押してください。';}
   else status.textContent='';
   if(generatedCount)completionMessage=(cancelAfterCurrent&&generatedCount<count?'画像生成を中止しました':'画像生成が完了しました')+'（'+generatedCount+'枚）';
@@ -2023,6 +2103,9 @@ class Handler(BaseHTTPRequestHandler):
             if progress_id:
                 with REQUEST_STAGES_LOCK:
                     REQUEST_STAGES[progress_id] = "prompt"
+            edit_region = image_workflows.validate_edit_region(body.get('edit_region')) if from_edit else None
+            if edit_region and model_registry.get(str(body.get('edit_model', 'qwen21_turbo')))['backend'] != 'flux3':
+                raise ValueError('矩形指定はKleinの編集で使用してください。')
             if direct_generation:
                 direct_prompt = body.get("direct_prompt")
                 if not isinstance(direct_prompt, str) or not direct_prompt.strip():
@@ -2032,7 +2115,9 @@ class Handler(BaseHTTPRequestHandler):
                 guide = body.get("marked_image")
                 region_edit = (from_edit and body.get("mask") and
                                model_registry.get(str(body.get("edit_model", "qwen21_turbo")))["backend"] == "qwen21")
-                if region_edit:
+                if edit_region:
+                    result = call_llm(body.get('history', []), character=None, edit_context={'rectangle': True})
+                elif region_edit:
                     if not isinstance(guide, dict) or guide.get("color") not in ("red", "blue", "green"):
                         raise ValueError("範囲指定の色を取得できません。画面を再読み込みしてください。")
                     result = call_llm(body.get("history", []), character=None, edit_context={"color": guide["color"]})
@@ -2071,7 +2156,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not selected_source:
                     raise ValueError("先に右の画像をクリックして編集対象を選んでください。")
                 source_image = selected_source
-                mode = "inpaint" if mask else "full"
+                mode = "inpaint" if mask or edit_region else "full"
             else:
                 source_image = None
                 mode = "new"
@@ -2101,6 +2186,8 @@ class Handler(BaseHTTPRequestHandler):
             IMAGE_PROMPT.set(prompt)
             generated_infos = []
             options = {"image_batch": image_batch} if progress_id or count > 1 else {}
+            if edit_region:
+                options['edit_region'] = edit_region
             for _ in range(count):
                 generated_infos.append(generate_image(prompt, w, h, mode, source_image, mask, marked_image,
                                                       edit_strength, None if from_edit else selected_character,
@@ -2120,6 +2207,7 @@ class Handler(BaseHTTPRequestHandler):
                 "final_prompt": prompt,
                 "model": selected_model,
                 "mode": mode,
+                "edit_region": edit_region,
                 "width": w,
                 "height": h,
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),

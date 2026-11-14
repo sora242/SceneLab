@@ -1,2 +1,4 @@
-# Keep Windows batch files as CRLF in GitHub ZIP downloads too.
+* text=auto eol=lf
+
+# Keep batch files as CRLF, including in GitHub ZIP downloads.
 *.bat -text

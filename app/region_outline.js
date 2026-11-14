@@ -20,6 +20,12 @@
   for(let i=0;i<count;i++)if(dist[i]>0&&dist[i]<=thickness){pixels.set(candidates[choice].rgb,i*4);pixels[i*4+3]=255;}
   return {pixels,color:candidates[choice].name};
  }
- root.RegionOutline={create};
+ function rectangle(a,b,width,height){
+  const clamp=(v,max)=>Math.max(0,Math.min(max,v));
+  const x1=clamp(a.x,width),x2=clamp(b.x,width),y1=clamp(a.y,height),y2=clamp(b.y,height);
+  if(!width||!height||Math.abs(x2-x1)<width/1000||Math.abs(y2-y1)<height/1000)return null;
+  return {x:Math.min(x1,x2)/width,y:Math.min(y1,y2)/height,width:Math.abs(x2-x1)/width,height:Math.abs(y2-y1)/height};
+ }
+ root.RegionOutline={create,rectangle};
  if(typeof module!=='undefined')module.exports=root.RegionOutline;
 })(typeof window!=='undefined'?window:globalThis);

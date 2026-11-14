@@ -13,7 +13,7 @@
  function finish(){active=false;selected.clear();notice.textContent='';render();}
  open.onclick=()=>{if(busy)return;if(active){finish();return;}active=true;notice.textContent='削除したい画像をクリックしてください。★付き画像も選択できます。';render();};cancel.onclick=finish;
  gallery.addEventListener('click',e=>{if(!active)return;e.preventDefault();e.stopImmediatePropagation();if(busy)return;const thumb=e.target.closest('.thumb'),id=thumb?.dataset.galleryId;if(!id||!galleryItems.has(id))return;if(selected.has(id))selected.delete(id);else selected.add(id);render();},true);
- remove.onclick=async()=>{if(busy||!selected.size)return;const ids=[...selected].filter(id=>galleryItems.has(id));if(!ids.length){finish();return;}const stars=ids.filter(id=>galleryItems.get(id).favorite).length;if(!confirm('選択した画像 '+ids.length+'枚'+(stars?'（★付き '+stars+'枚を含む）':'')+'を完全に削除しますか？'))return;
+ remove.onclick=async()=>{if(busy||!selected.size)return;const ids=[...selected].filter(id=>galleryItems.has(id));if(!ids.length){finish();return;}const stars=ids.filter(id=>galleryItems.get(id).favorite).length;if(!await appConfirm('選択した画像 '+ids.length+'枚'+(stars?'（★付き '+stars+'枚を含む）':'')+'を完全に削除しますか？'))return;
   busy=true;render();let deleted=0;const failed=[];
   try{for(const id of ids){notice.textContent='削除中… '+(deleted+failed.length+1)+' / '+ids.length;
     try{const r=await fetch('/api/gallery/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({gallery_id:id})});const result=await readApiResponse(r);if(!r.ok)throw Error(result.error||'削除できませんでした');

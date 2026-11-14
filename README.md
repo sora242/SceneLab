@@ -38,6 +38,8 @@ SceneLab本体はPython標準ライブラリのみを使用し、追加の `pip 
 ## 標準対応モデル
 
 - Qwen-Image-2.1 / Qwen-Image-2.1-Turbo
+- FLUX 3 Image Klein（Distilled INT8）
+- SDXL（標準：Juggernaut XL Ragnarok／他の一体型チェックポイントへ差し替え可）
 - Z-Image Turbo
 - Anima Aesthetic v1.1 / Anima Turbo v1.1
 
@@ -86,6 +88,6 @@ Windows上で、同じPCのブラウザーから操作する用途を対象と�
 
 SceneLab本体は[MITライセンス](LICENSE)です。
 
-公式テンプレート由来のワークフローの出所・著作権表示・条件は[Third-party notices](app/THIRD_PARTY_NOTICES.md)と[ライセンス全文](app/LICENSES/Comfy-Org-workflow_templates-MIT.txt)を参照してください。
+公式ワークフロー由来の部分の出所・著作権表示・条件は[Third-party notices](app/THIRD_PARTY_NOTICES.md)と[同梱ライセンス全文](app/LICENSES/)を参照してください。
 
-外部ソフト・モデルにはそれぞれの条件が適用されます。特にQwen-Image 2.1/TurboとAnimaは独自の利用条件があり、SceneLab本体のMITとは別です。取得・利用するモデルのライセンスを確認してください。
+外部ソフト・モデルにはそれぞれの条件が適用されます。特にQwen-Image 2.1/Turbo・Anima・FLUX 3 Kleinは独自の利用条件があり、SceneLab本体のMITとは別です。取得・利用するモデルのライセンスを確認してください。
